@@ -39,3 +39,6 @@ yarn-error.log*
 # python
 /apps/api/.venv
 /apps/api/__pycache__
+
+#local 
+.vscode/
