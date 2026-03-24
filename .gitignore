@@ -35,3 +35,7 @@ yarn-error.log*
 
 # turbo
 .turbo
+
+# python
+/apps/api/.venv
+/apps/api/__pycache__
