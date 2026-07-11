@@ -18,6 +18,7 @@ An AI-powered fact-checking platform. Submit a claim or paste an article — the
 - [CI/CD](#cicd)
 - [Observability](#observability)
 - [Development Notes](#development-notes)
+- [Roadmap](#roadmap)
 
 ---
 
@@ -27,8 +28,8 @@ verifAI is a full-stack portfolio project demonstrating end-to-end system design
 
 **What it does:**
 1. User submits a claim via the web or mobile app
-2. API queues a scraping job to Redis
-3. A Playwright worker scrapes trusted sources (Reuters, AP News, Snopes, PolitiFact)
+2. API queues a scraping job to Upstash Redis
+3. A worker scrapes trusted sources (eg. Reuters, AP News, Snopes, PolitiFact) using httpx + BeautifulSoup
 4. Gemini AI analyzes the claim against the scraped evidence
 5. A verdict (`true` / `false` / `misleading` / `unverifiable`) is returned with a confidence score and explanation
 6. Results are streamed back to the client in real time via SSE or WebSocket
@@ -41,21 +42,21 @@ verifAI is a full-stack portfolio project demonstrating end-to-end system design
 | Technology | Purpose |
 |---|---|
 | **FastAPI** | REST API, SSE streaming, WebSocket endpoints |
-| **Pydantic v2** | Request/response validation and MongoDB document models |
+| **Pydantic v2** | Request/response validation and document models |
 | **Motor** | Async MongoDB driver |
-| **Playwright** | Headless browser scraping worker |
-| **Playwright Codegen** | Visual script recording for new scrape targets |
+| **httpx** | Async HTTP client for fetching source pages |
+| **BeautifulSoup4** | HTML parsing and content extraction |
 
 ### AI
 | Technology | Purpose |
 |---|---|
-| **Gemini API** (`gemini-1.5-flash`) | Verdict generation, confidence scoring, explanation |
+| **Gemini API** | Verdict generation, confidence scoring, explanation |
 
 ### Data
 | Technology | Purpose |
 |---|---|
-| **MongoDB Community** | Self-hosted primary database — claims, reports, sources, users |
-| **Redis** | Job queue (scrape jobs) + result cache (TTL-based) |
+| **MongoDB Atlas** | Managed cloud database — claims, reports, sources, users (free M0 tier) |
+| **Upstash Redis** | Serverless Redis — job queue + result cache (free tier, REST-based) |
 
 ### Web
 | Technology | Purpose |
@@ -72,16 +73,15 @@ verifAI is a full-stack portfolio project demonstrating end-to-end system design
 | Technology | Purpose |
 |---|---|
 | **Docker** | CI-only image builds — no local Docker install required |
-| **docker-compose** | Local dev environment — MongoDB + Redis + worker + API |
+| **docker-compose** | Local dev environment — API + worker only |
 
 ### Cloud (GCP)
 | Technology | Purpose |
 |---|---|
 | **Cloud Run** | Hosts FastAPI container, scales to zero (free when idle) |
-| **Cloud Run Jobs** | On-demand Playwright scraper execution |
+| **Cloud Run Jobs** | On-demand scraper execution |
 | **Pub/Sub** | Job trigger queue between API and scraper |
 | **Container Registry** | Stores Docker images built by CI |
-| **GCE e2-micro VM** | Runs self-hosted MongoDB 24/7 with persistent disk |
 
 ### CI/CD & Monorepo
 | Technology | Purpose |
@@ -113,19 +113,21 @@ verifAI is a full-stack portfolio project demonstrating end-to-end system design
        │                       │
        ▼                       ▼
 ┌─────────────┐      ┌─────────────────────┐
-│    Redis    │      │    MongoDB          │
-│  job queue  │      │  (GCE e2-micro VM)  │
-│  + cache    │      │  self-hosted        │
-└──────┬──────┘      └─────────────────────┘
+│   Upstash   │      │    MongoDB Atlas    │
+│    Redis    │      │  (M0 free cluster)  │
+│  job queue  │      └─────────────────────┘
+│  + cache    │
+└──────┬──────┘
        │
        ▼
-┌──────────────────────────────────────────┐
-│         GCP CLOUD RUN JOB                │
-│         Playwright Worker                │
-│  1. Scrape Reuters, AP, Snopes, Politifact│
-│  2. Call Gemini API for verdict          │
-│  3. Write result back to MongoDB + cache │
-└──────────────────────────────────────────┘
+┌───────────────────────────────────────────┐
+│         GCP CLOUD RUN JOB                 │
+│         Scraper Worker                    │
+│  1. httpx fetches 4 sources concurrently  │
+│  2. BeautifulSoup extracts content        │
+│  3. Call Gemini API for verdict           │
+│  4. Write result to MongoDB Atlas + cache │
+└───────────────────────────────────────────┘
 ```
 
 ### Request lifecycle
@@ -134,7 +136,7 @@ verifAI is a full-stack portfolio project demonstrating end-to-end system design
 Client
   │
   ├─ POST /api/v1/claims          → API creates report (status: pending)
-  │                               → pushes job to Redis queue
+  │                               → pushes job to Upstash Redis queue
   │                               ← returns { id, status: "pending" }
   │
   ├─ GET /api/v1/claims/:id/stream  (SSE)
@@ -144,10 +146,11 @@ Client
   │     ← event: result         { verdict, confidence, sources, explanation }
   │
 Worker (separate process)
-  ├─ brpop Redis queue
-  ├─ Playwright scrapes 4 sources concurrently
+  ├─ brpop Upstash Redis queue
+  ├─ httpx fetches 4 sources concurrently
+  ├─ BeautifulSoup extracts relevant content
   ├─ Gemini API returns structured verdict
-  └─ Writes final report to MongoDB + updates Redis cache
+  └─ Writes final report to MongoDB Atlas + updates Redis cache
 ```
 
 ---
@@ -155,14 +158,14 @@ Worker (separate process)
 ## Project Structure
 
 ```
-factcheck/
+verifai/
 ├── apps/
 │   ├── api/                        # FastAPI backend
 │   │   ├── app/
 │   │   │   ├── core/
 │   │   │   │   ├── config.py       # pydantic-settings, all env vars
-│   │   │   │   ├── redis.py        # async Redis client singleton
-│   │   │   │   └── database.py     # Motor MongoDB client singleton
+│   │   │   │   ├── redis.py        # Upstash Redis client singleton
+│   │   │   │   └── database.py     # Motor MongoDB Atlas client singleton
 │   │   │   ├── models/
 │   │   │   │   └── claim.py        # Pydantic v2 models (ClaimReport, Source, etc.)
 │   │   │   ├── routers/
@@ -171,7 +174,7 @@ factcheck/
 │   │   │   ├── services/
 │   │   │   │   ├── cache.py        # Redis read/write for reports
 │   │   │   │   ├── queue.py        # Redis job push/pop
-│   │   │   │   ├── scraper.py      # Playwright scraping service
+│   │   │   │   ├── scraper.py      # httpx + BeautifulSoup scraping service
 │   │   │   │   └── gemini.py       # Gemini AI verdict service
 │   │   │   ├── workers/
 │   │   │   │   └── scrape_worker.py # Standalone worker process
@@ -198,7 +201,7 @@ factcheck/
 │       ├── ci.yml                  # Lint + test on every PR
 │       └── deploy.yml              # Build Docker image + deploy to Cloud Run on main
 │
-├── docker-compose.yml              # Local dev: MongoDB + Redis + API + worker
+├── docker-compose.yml              # Local dev: API + worker (no DB or Redis needed)
 ├── turbo.json                      # Turborepo pipeline config
 ├── package.json                    # Root workspace config
 └── .gitignore
@@ -212,7 +215,8 @@ factcheck/
 
 - Node.js 20+
 - Python 3.11+
-- Docker + Docker Compose (for local services only — not for building)
+- A MongoDB Atlas account (free at [cloud.mongodb.com](https://cloud.mongodb.com))
+- An Upstash account (free at [upstash.com](https://upstash.com))
 - A Gemini API key (free at [aistudio.google.com](https://aistudio.google.com))
 
 ### 1. Clone and install
@@ -220,7 +224,7 @@ factcheck/
 ```bash
 git clone https://github.com/yourusername/verifai.git
 cd verifai
-npm install          # installs all JS workspaces via Turborepo
+npm install
 ```
 
 ### 2. Set up Python environment
@@ -230,45 +234,48 @@ cd apps/api
 python -m venv .venv
 source .venv/bin/activate       # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-playwright install chromium
 ```
 
-### 3. Start local services (MongoDB + Redis)
+### 3. Configure MongoDB Atlas
 
-```bash
-# From the project root — Docker only used here, not for building
-docker-compose up -d mongo redis
-```
+1. Create a free M0 cluster at [cloud.mongodb.com](https://cloud.mongodb.com)
+2. Create a database user and whitelist your IP (or use `0.0.0.0/0` for dev)
+3. Copy your connection string into `.env`
 
-### 4. Configure environment variables
+### 4. Configure Upstash Redis
+
+1. Create a free Redis database at [upstash.com](https://upstash.com)
+2. Copy the REST URL and token into `.env`
+
+### 5. Configure environment variables
 
 ```bash
 cp .env.example .env
-# Fill in GEMINI_API_KEY and any other values
+# Fill in GEMINI_API_KEY, MONGODB_URL, REDIS_REST_URL, REDIS_REST_TOKEN
 ```
 
-### 5. Run the API
+### 6. Run the API
 
 ```bash
 cd apps/api
 uvicorn app.main:app --reload --port 8000
 ```
 
-### 6. Run the worker (separate terminal)
+### 7. Run the worker (separate terminal)
 
 ```bash
 cd apps/api
 python -m app.workers.scrape_worker
 ```
 
-### 7. Run the web app
+### 8. Run the web app
 
 ```bash
 cd apps/web
-npm run dev        # or from root: npx turbo dev --filter=web
+npm run dev
 ```
 
-### 8. Run the mobile app
+### 9. Run the mobile app
 
 ```bash
 cd apps/mobile
@@ -285,12 +292,14 @@ API docs available at `http://localhost:8000/docs`
 # App
 DEBUG=false
 
-# MongoDB (self-hosted)
-MONGODB_URL=mongodb://localhost:27017
+# MongoDB Atlas
+MONGODB_URL=mongodb+srv://<user>:<password>@<cluster>.mongodb.net/?retryWrites=true&w=majority
 MONGODB_DB_NAME=verifai
 
-# Redis
-REDIS_URL=redis://localhost:6379
+# Upstash Redis
+REDIS_URL=rediss://<your-upstash-url>:6379
+REDIS_REST_URL=https://<your-upstash-url>.upstash.io
+REDIS_REST_TOKEN=your_token_here
 REDIS_CACHE_TTL=3600
 
 # Gemini
@@ -374,7 +383,7 @@ data: { "status": "done", "verdict": "false", "confidence": 0.97, ... }
 
 ### `GET /health/ready`
 
-Readiness check — verifies Redis connectivity and returns queue length.
+Readiness check — verifies Upstash Redis and MongoDB Atlas connectivity and returns queue length.
 
 ---
 
@@ -383,21 +392,22 @@ Readiness check — verifies Redis connectivity and returns queue length.
 ```
 1. POST /claims
    └─ Create ClaimReport (status: pending)
-   └─ cache_service.set_report()        → Redis (TTL: 1hr)
-   └─ queue_service.push_scrape_job()   → Redis list (LPUSH)
+   └─ repository.insert()               → MongoDB Atlas (permanent)
+   └─ cache_service.set_report()        → Upstash Redis (TTL: 1hr)
+   └─ queue_service.push_scrape_job()   → Upstash Redis list (LPUSH)
    └─ Return { id, status: pending }
 
 2. Worker loop (brpop)
-   └─ pop job from Redis
-   └─ update status → "scraping"        → Redis cache
-   └─ scraper_service.scrape_evidence() → Playwright (4 sources, concurrent)
-   └─ update status → "analyzing"       → Redis cache + MongoDB
+   └─ pop job from Upstash Redis
+   └─ update status → "scraping"        → Upstash Redis cache
+   └─ scraper_service.scrape_evidence() → httpx + BeautifulSoup (4 sources, concurrent)
+   └─ update status → "analyzing"       → Upstash Redis cache + MongoDB Atlas
    └─ gemini_service.analyze_claim()    → Gemini API
-   └─ update status → "done"            → Redis cache + MongoDB
-   └─ final write to MongoDB            → permanent storage
+   └─ update status → "done"            → Upstash Redis cache + MongoDB Atlas
+   └─ final write to MongoDB Atlas      → permanent storage
 
 3. SSE stream
-   └─ polls Redis cache every 2s
+   └─ polls Upstash Redis cache every 2s
    └─ emits status_update on each change
    └─ emits result on done/failed
    └─ closes connection
@@ -407,33 +417,24 @@ Readiness check — verifies Redis connectivity and returns queue length.
 
 ## Deployment
 
-### Local services only (no cloud account needed)
+### Local dev
+
+No local services needed. MongoDB runs on Atlas, Redis runs on Upstash — just run the API and worker directly.
 
 ```bash
+# Optional: use docker-compose to run API + worker together
 docker-compose up
 ```
 
-Starts: MongoDB on `27017`, Redis on `6379`, FastAPI on `8000`, worker process.
-
 ### GCP (production)
 
-#### MongoDB — GCE e2-micro VM (always-free tier)
+#### MongoDB — Atlas M0 (always-free tier)
 
-```bash
-# Create VM
-gcloud compute instances create verifai-mongo \
-  --machine-type=e2-micro \
-  --zone=us-central1-a \
-  --boot-disk-size=30GB
+No deployment needed. Your Atlas cluster is already running in the cloud. Make sure the Cloud Run service IP is whitelisted in Atlas **Network Access**, or set `0.0.0.0/0` during development.
 
-# SSH in and run MongoDB
-docker run -d \
-  --name mongodb \
-  --restart unless-stopped \
-  -p 27017:27017 \
-  -v /data/db:/data/db \
-  mongo:7
-```
+#### Upstash Redis — (always-free tier)
+
+No deployment needed. Upstash is fully managed and accessible over HTTPS from anywhere including Cloud Run.
 
 #### FastAPI — Cloud Run
 
@@ -446,7 +447,7 @@ gcloud run deploy verifai-api \
   --platform managed \
   --region us-central1 \
   --allow-unauthenticated \
-  --set-env-vars MONGODB_URL=mongodb://MONGO_VM_IP:27017
+  --set-env-vars MONGODB_URL=mongodb+srv://<user>:<pass>@<cluster>.mongodb.net/verifai
 ```
 
 #### Worker — Cloud Run Jobs
@@ -489,7 +490,7 @@ Turborepo's remote cache means unchanged apps are skipped entirely — builds st
 
 ### OpenTelemetry
 
-Distributed traces span the full request lifecycle — from the HTTP request into FastAPI, through Redis queue push, to the worker scraping and AI call. Configure the OTLP exporter endpoint in `.env` to send traces to any compatible backend (GCP Trace, Jaeger, etc.).
+Distributed traces span the full request lifecycle — from the HTTP request into FastAPI, through Upstash Redis queue push, to the worker scraping and AI call. Configure the OTLP exporter endpoint in `.env` to send traces to any compatible backend (GCP Trace, Jaeger, etc.).
 
 ### Sentry
 
@@ -506,14 +507,7 @@ Set `SENTRY_DSN_*` environment variables to enable. Can be left empty in local d
 
 ### Adding a new scrape target
 
-Use Playwright Codegen to record a scraping script against any site:
-
-```bash
-cd apps/api
-playwright codegen https://www.snopes.com/search/target-topic
-```
-
-Copy the generated selectors into `app/services/scraper.py`.
+Add the target URL to the sources list in `app/services/scraper.py`. httpx fetches the page and BeautifulSoup handles the content extraction. Use your browser's dev tools to identify the right HTML selectors for the content you need.
 
 ### Shared types
 
@@ -531,3 +525,13 @@ npx turbo build --filter=[HEAD^1]
 # See the task dependency graph
 npx turbo graph
 ```
+
+---
+
+## Roadmap
+
+- [ ] Playwright-based scraping for JavaScript-rendered sources
+- [ ] User accounts and saved claim history
+- [ ] Public feed of recently fact-checked claims
+- [ ] Community upvotes on verdicts
+- [ ] Browser extension for one-click fact-checking
