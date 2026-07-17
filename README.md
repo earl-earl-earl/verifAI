@@ -62,12 +62,14 @@ verifAI is a full-stack portfolio project demonstrating end-to-end system design
 | Technology | Purpose |
 |---|---|
 | **Next.js** | Web application — dashboard, claim feed, report detail |
+| **TanStack Query** | Server state management — claim submission, verdict polling, report caching |
 | **Zod** | Frontend schema validation, mirrors Pydantic models 1:1 |
 
 ### Mobile
 | Technology | Purpose |
 |---|---|
 | **Expo** | Cross-platform mobile app with share-sheet claim submission |
+| **TanStack Query** | Server state management — claim submission, verdict polling, report caching |
 
 ### Containerization
 | Technology | Purpose |
@@ -185,10 +187,14 @@ verifai/
 │   ├── web/                        # Next.js web app
 │   │   ├── app/                    # App router
 │   │   ├── components/
+│   │   ├── lib/
+│   │   │   └── queries/            # TanStack Query hooks (useClaim, useSubmitClaim)
 │   │   └── package.json
 │   │
 │   └── mobile/                     # Expo mobile app
 │       ├── app/                    # Expo Router
+│       ├── lib/
+│       │   └── queries/            # TanStack Query hooks
 │       └── package.json
 │
 ├── packages/
@@ -407,6 +413,7 @@ Readiness check — verifies Upstash Redis and MongoDB Atlas connectivity and re
    └─ final write to MongoDB Atlas      → permanent storage
 
 3. SSE stream
+   └─ TanStack Query manages polling + cache invalidation on client
    └─ polls Upstash Redis cache every 2s
    └─ emits status_update on each change
    └─ emits result on done/failed
@@ -508,6 +515,16 @@ Set `SENTRY_DSN_*` environment variables to enable. Can be left empty in local d
 ### Adding a new scrape target
 
 Add the target URL to the sources list in `app/services/scraper.py`. httpx fetches the page and BeautifulSoup handles the content extraction. Use your browser's dev tools to identify the right HTML selectors for the content you need.
+
+### TanStack Query setup
+
+Query hooks live in `apps/web/lib/queries/` and `apps/mobile/lib/queries/`. Core hooks:
+
+- `useSubmitClaim()` — wraps `POST /api/v1/claims`, returns mutation state
+- `useClaim(id)` — fetches report by ID, used after submission
+- `useClaimStream(id)` — manages SSE connection, updates query cache on each event
+
+On the web, `QueryClientProvider` wraps the root layout. On mobile, it wraps the Expo root `_layout.tsx`.
 
 ### Shared types
 
