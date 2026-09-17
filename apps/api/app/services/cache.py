@@ -1,7 +1,9 @@
-from app.core.redis import get_redis
-from app.core.config import settings
-from app.models.claim import ClaimReport
 from uuid import UUID
+
+from app.core.config import settings
+from app.core.redis import get_redis
+from app.models.claim import ClaimReport
+
 
 # Helper for creating key name pattern
 def report_key(report_id: UUID) -> str:

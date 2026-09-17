@@ -1,9 +1,10 @@
 # Handles the actual job queue, pushing scrape jobs onto Redis when a claim is submitted and letting
 # the worker pop them off one at a time.
 
-from app.core.redis import get_redis
-from uuid import UUID
 import json
+from uuid import UUID
+
+from app.core.redis import get_redis
 
 # Queue key name
 QUEUE_KEY = "scrape_jobs"

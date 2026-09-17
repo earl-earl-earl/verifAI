@@ -1,7 +1,8 @@
+from datetime import datetime, timezone
+from uuid import UUID
+
 from app.core.database import get_database
 from app.models.claim import ClaimReport
-from uuid import UUID
-from datetime import datetime, timezone
 
 # Table name
 COLLECTION_NAME = "claims"

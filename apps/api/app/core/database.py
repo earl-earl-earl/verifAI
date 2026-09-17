@@ -1,5 +1,5 @@
-from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from app.core.config import settings
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
 # Initialize module-level variables
 client: AsyncIOMotorClient | None = None
@@ -12,7 +12,7 @@ async def connect() -> None:
     db = client[settings.MONGODB_DB_NAME]
 
 def disconnect() -> None:
-    global client
+    global client  # noqa: PLW0602
     if client is not None:
         client.close()
 

@@ -1,7 +1,9 @@
+from datetime import datetime, timezone
 from enum import Enum
 from uuid import UUID, uuid4
+
 from pydantic import BaseModel, Field, HttpUrl
-from datetime import datetime, timezone
+
 
 # Verdicts
 class Verdict(str, Enum):
